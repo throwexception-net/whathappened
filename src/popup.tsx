@@ -1,5 +1,24 @@
 import React, { useEffect, useState } from "react";
-import { createRoot } from "react-dom/client";
+import ReactDOM from "react-dom";
+import {RREventMat} from "./type/event";
+
+function getCurrentTabs() {
+  return new Promise<chrome.tabs.Tab[]>((resolve) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, resolve);
+  })
+}
+
+function sendMessageToTab(id: number, message: any) {
+  return new Promise<{ success: boolean, data: any }>((resolve) => {
+    chrome.tabs.sendMessage(id, message, (response) => {
+      console.log(response)
+      resolve(response)
+    })
+  })
+}
+
+const bgPort = chrome.runtime.connect();
+
 
 const Popup = () => {
   const [count, setCount] = useState(0);
@@ -9,14 +28,15 @@ const Popup = () => {
     chrome.action.setBadgeText({ text: count.toString() });
   }, [count]);
 
+
   useEffect(() => {
-    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+    getCurrentTabs().then((tabs) => {
       setCurrentURL(tabs[0].url);
-    });
+    })
   }, []);
 
   const changeBackground = () => {
-    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+    getCurrentTabs().then((tabs) => {
       const tab = tabs[0];
       if (tab.id) {
         chrome.tabs.sendMessage(
@@ -26,11 +46,32 @@ const Popup = () => {
           },
           (msg) => {
             console.log("result message:", msg);
-          }
+          },
         );
       }
-    });
+    })
   };
+
+  async function replay() {
+    const [currentTab] = await getCurrentTabs()
+    const { data } = await sendMessageToTab(currentTab.id!, {
+      type: 'get_events',
+    })
+
+    const previewUrl = chrome.runtime.getURL('preview.html');
+    const { data: prevEm } = await new Promise<{ data: RREventMat }>((resolve) => {
+      chrome.runtime.sendMessage({
+        type: 'get_events_matrix_by_id',
+        data: currentTab.id
+      }, resolve)
+    })
+
+    window.open(previewUrl, JSON.stringify([...prevEm, ...data]))
+    // await sendMessageToTab(previewTab.id!, {
+    //   type: 'send_events',
+    //   data,
+    // })
+  }
 
   return (
     <>
@@ -45,14 +86,19 @@ const Popup = () => {
         count up
       </button>
       <button onClick={changeBackground}>change background</button>
+      <button onClick={replay}>replay</button>
+
+      <ol>
+
+        <li></li>
+      </ol>
     </>
   );
 };
 
-const root = createRoot(document.getElementById("root")!);
-
-root.render(
+ReactDOM.render(
   <React.StrictMode>
     <Popup />
-  </React.StrictMode>
+  </React.StrictMode>,
+  document.getElementById("root"),
 );
