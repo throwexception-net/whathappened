@@ -8,7 +8,7 @@ export interface NetPayload {
   id: number
   time: number | null
   timestamp: number | null
-  headers: Record<string, string>
+  headers: [string, string][]
   body: NetBodyDef | null
 }
 
@@ -25,14 +25,12 @@ export interface NetResPayload extends NetPayload {
   isTimeout: boolean
   aborted: boolean
   responseType: string | null
+  hasError: boolean
 }
-
 
 interface Emitter {
   emit(name: string, payload: any): void
 }
-
-const nativeFetch = window.fetch
 
 function formatUrl(url: string) {
   if (url.startsWith('http://') || url.startsWith('https://')) {
@@ -83,12 +81,12 @@ function parseBody(body: Document | BodyInit | null | undefined): NetBodyDef {
 const lineRE = /[\r\n]+/
 
 function parseHeader(headers: string) {
-  const map: Record<string, string> = {}
+  const h: [string, string][] = []
   headers.trim().split(lineRE).forEach((line) => {
     const i = line.indexOf(': ')
-    map[line.substr(0, i)] = line.substr(i + 2)
+    h.push([line.substr(0, i), line.substr(i + 2)])
   })
-  return map
+  return h
 }
 
 function isRequest(input: RequestInfo | URL): input is Request {
@@ -130,7 +128,9 @@ async function parseBodyFrom(input: Request | Response) {
   return null
 }
 
-export default function ajaxInterceptor(emitter: Emitter, offset: number) {
+export default function fetchxhrInterceptor(emitter: Emitter) {
+  const nativeFetch = window.fetch
+
   const { open, send, setRequestHeader } = XMLHttpRequest.prototype
   let idx = 100
   const reqMap = new WeakMap<object, NetReqPayload>()
@@ -140,7 +140,7 @@ export default function ajaxInterceptor(emitter: Emitter, offset: number) {
       data = {
         tag: 'req',
         id: idx++,
-        headers: {},
+        headers: [],
         time: null,
         timestamp: null,
         url: null,
@@ -172,67 +172,79 @@ export default function ajaxInterceptor(emitter: Emitter, offset: number) {
 
   function proxySetRequestHeader(this: XMLHttpRequest, name: string, value: string) {
     const data = get(this)
-    data.headers[name] = value
+    data.headers.push([name, value])
     // @ts-ignore
     return setRequestHeader.apply(this, arguments)
   }
 
   function proxySend(this: XMLHttpRequest, body?: Document | BodyInit | null): void {
     const data = get(this)
-    data.time = Date.now() - offset
-    data.timestamp = Date.now()
+    data.time = performance.now()
+    data.timestamp = performance.timeOrigin + data.time
     data.cookies = document.cookie.toString()
     data.body = parseBody(body)
-    emitter.emit('event:ajax', data)
+    emitter.emit('request', data)
     const resData: NetResPayload = {
       tag: 'res',
       id: data.id,
       time: null,
       timestamp: null,
-      headers: {},
+      headers: [],
       status: null,
       ok: false,
       isTimeout: false,
       aborted: false,
       body: null,
       responseType: null,
+      hasError: false,
     }
 
     this.addEventListener('load', () => {
-      resData.time = Date.now() - offset
-      resData.timestamp = Date.now()
+      resData.time = performance.now()
+      resData.timestamp = performance.timeOrigin + resData.time
       resData.ok = true
       resData.status = this.status
       resData.headers = parseHeader(this.getAllResponseHeaders())
       resData.responseType = this.responseType
+      let d = ''
+      try {
+        d = this.responseText
+      } catch (e) {}
       resData.body = {
         type: 'string',
-        data: this.responseText,
+        data: d,
       }
-      emitter.emit('event:ajax', resData)
+      emitter.emit('response', resData)
     })
     this.addEventListener('error', () => {
-      resData.time = Date.now() - offset
-      resData.timestamp = Date.now()
+      resData.time = performance.now()
+      resData.timestamp = performance.timeOrigin + resData.time
       resData.status = this.status
       resData.responseType = this.responseType
+      resData.hasError = true
+      let d = ''
+      try {
+        d = this.responseText
+      } catch (e) {}
       resData.body = {
         type: 'string',
-        data: this.responseText,
+        data: d,
       }
-      emitter.emit('event:ajax', resData)
+      emitter.emit('response', resData)
     })
     this.addEventListener('abort', () => {
-      resData.time = Date.now() - offset
-      resData.timestamp = Date.now()
+      resData.time = performance.now()
+      resData.timestamp = performance.timeOrigin + resData.time
       resData.aborted = true
-      emitter.emit('event:ajax', resData)
+      resData.hasError = true
+      emitter.emit('response', resData)
     })
     this.addEventListener('timeout', () => {
-      resData.time = Date.now() - offset
-      resData.timestamp = Date.now()
+      resData.time = performance.now()
+      resData.timestamp = performance.timeOrigin + resData.time
       resData.isTimeout = true
-      emitter.emit('event:ajax', resData)
+      resData.hasError = true
+      emitter.emit('response', resData)
     })
     // @ts-ignore
     return send.apply(this, arguments)
@@ -241,12 +253,13 @@ export default function ajaxInterceptor(emitter: Emitter, offset: number) {
   async function proxyFetch(this: any, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const id = idx++
     const fetchSelf = this
+    const time = performance.now()
     const reqData: NetReqPayload = {
-      id,
       tag: 'req',
-      headers: {},
-      time: Date.now() - offset,
-      timestamp: Date.now(),
+      id,
+      headers: [],
+      time,
+      timestamp: performance.timeOrigin + time,
       url: '',
       method: 'GET',
       type: 'fetch',
@@ -278,48 +291,54 @@ export default function ajaxInterceptor(emitter: Emitter, offset: number) {
     if (info && info.method) {
       reqData.method = info.method.toUpperCase()
       if (info.headers instanceof Headers) {
-        info.headers.forEach((k, v) => {
-          reqData.headers[k] = v
+        info.headers.forEach((v, k) => {
+          reqData.headers.push([k, v])
         })
       } else if (typeof info.headers === 'object') {
+        const h: any = info.headers || {}
+        Object.keys(h).forEach((k, v) => {
+          reqData.headers.push([k, h[k] || ''])
+        })
         Object.assign(reqData.headers, info.headers)
       }
     }
 
-    emitter.emit('event:ajax', reqData)
+    emitter.emit('request', reqData)
     const resData: NetResPayload = {
-      id,
       tag: 'res',
+      id,
       time: null,
       timestamp: null,
-      headers: {},
+      headers: [],
       status: null,
       ok: false,
       isTimeout: false,
       aborted: false,
       body: null,
       responseType: null,
+      hasError: false,
     }
     try {
       const fetchPromise = nativeFetch.call(fetchSelf, input, init)
       const ret = await fetchPromise
-      resData.time = Date.now() - offset
-      resData.timestamp = Date.now()
+      resData.time = performance.now()
+      resData.timestamp = performance.timeOrigin + resData.time
       resData.status = ret.status
       resData.ok = ret.ok
       if (ret.headers) {
-        ret.headers.forEach((k, v) => {
-          resData.headers[k] = v
+        ret.headers.forEach((v, k) => {
+          resData.headers.push([k, v])
         })
       }
       resData.body = await parseBodyFrom(ret)
       return ret
     } catch (e) {
-      resData.time = Date.now() - offset
-      resData.timestamp = Date.now()
+      resData.time = performance.now()
+      resData.timestamp = performance.timeOrigin + resData.time
+      resData.hasError = true
       throw e
     } finally {
-      emitter.emit('event:ajax', resData)
+      emitter.emit('response', resData)
     }
   }
 
@@ -328,11 +347,13 @@ export default function ajaxInterceptor(emitter: Emitter, offset: number) {
   XMLHttpRequest.prototype.setRequestHeader = proxySetRequestHeader
   window.fetch = proxyFetch
 
-  return function release() {
-    XMLHttpRequest.prototype.open = open
-    XMLHttpRequest.prototype.send = send
-    XMLHttpRequest.prototype.setRequestHeader = setRequestHeader
-    window.fetch = nativeFetch
+  return {
+    release() {
+      XMLHttpRequest.prototype.open = open
+      XMLHttpRequest.prototype.send = send
+      XMLHttpRequest.prototype.setRequestHeader = setRequestHeader
+      window.fetch = nativeFetch
+    }
   }
 }
 

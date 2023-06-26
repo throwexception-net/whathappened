@@ -1,12 +1,9 @@
-import ajaxInterceptor from './ajaxInterceptor'
+import fetchxhrInterceptor from "./fetchxhrInterceptor";
 
-console.log('install ajaxInterceptor')
+console.log('interceptors')
 
-// @ts-ignore
-ajaxInterceptor({
-  emit(name: string, payload: any) {
-    console.log('ajaxInterceptor', name, payload)
+const interceptor = fetchxhrInterceptor({
+  emit(name: string, payload) {
+    console.log('fetchxhrInterceptor', name, payload)
   }
-}, 0)
-
-
+})

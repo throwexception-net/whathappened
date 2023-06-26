@@ -45,7 +45,7 @@
     "storage",
     "webRequest",
     "tabs",
-    "activeTab"
+    "unlimitedStorage"
   ],
 
   "host_permissions": [
